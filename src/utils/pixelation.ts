@@ -105,6 +105,13 @@ const WARM_GREEN_MATCH_PENALTY = 5;
 const WARM_OR_NEUTRAL_A_MIN = -0.004;
 const NON_BLUE_B_MIN = -0.01;
 const MIN_VISIBLE_CHROMA = 0.008;
+// Image compression and lighting can add a small green cast to an otherwise
+// gray cell, so the source threshold is intentionally wider than the palette
+// threshold used to identify truly neutral bead colors.
+const NEUTRAL_SOURCE_MAX_CHROMA = 0.035;
+const NEUTRAL_SOURCE_MAX_CHANNEL_SPREAD = 24;
+const NEUTRAL_PALETTE_MAX_CHROMA = 0.018;
+const NEUTRAL_PALETTE_MAX_CHANNEL_SPREAD = 20;
 const GREEN_HUE_MIN = 115;
 const GREEN_HUE_MAX = 200;
 const COOL_HUE_MAX = 260;
@@ -126,6 +133,10 @@ function getHue(lab: OklabColor): number {
   return hue < 0 ? hue + 360 : hue;
 }
 
+function getRgbChannelSpread(rgb: RgbColor): number {
+  return Math.max(rgb.r, rgb.g, rgb.b) - Math.min(rgb.r, rgb.g, rgb.b);
+}
+
 function isHueInRange(lab: OklabColor, minHue: number, maxHue: number): boolean {
   if (getChroma(lab) < MIN_VISIBLE_CHROMA) return false;
   const hue = getHue(lab);
@@ -144,6 +155,22 @@ function isWarmOrNeutral(lab: OklabColor): boolean {
   return lab.a >= WARM_OR_NEUTRAL_A_MIN && lab.b >= NON_BLUE_B_MIN;
 }
 
+function isNeutralSourceColor(rgb: RgbColor): boolean {
+  const lab = getOklabColor(rgb);
+  return getChroma(lab) <= NEUTRAL_SOURCE_MAX_CHROMA
+    && getRgbChannelSpread(rgb) <= NEUTRAL_SOURCE_MAX_CHANNEL_SPREAD;
+}
+
+function isNeutralPaletteColor(rgb: RgbColor): boolean {
+  const lab = getOklabColor(rgb);
+  return getChroma(lab) <= NEUTRAL_PALETTE_MAX_CHROMA
+    && getRgbChannelSpread(rgb) <= NEUTRAL_PALETTE_MAX_CHANNEL_SPREAD;
+}
+
+function isNonGreenNeutral(lab: OklabColor): boolean {
+  return getChroma(lab) <= NEUTRAL_SOURCE_MAX_CHROMA && !isGreenHue(lab);
+}
+
 /**
  * Near-neutral warm and green shades can have a small total Oklab distance
  * even when their tint is visibly opposite. Keep that hue direction intact
@@ -154,8 +181,8 @@ export function hasWarmGreenHueConflict(rgb1: RgbColor, rgb2: RgbColor): boolean
   const lab2 = getOklabColor(rgb2);
 
   return (
-    (isWarmOrNeutral(lab1) && isGreenHue(lab2))
-    || (isGreenHue(lab1) && isWarmOrNeutral(lab2))
+    ((isWarmOrNeutral(lab1) || isNonGreenNeutral(lab1)) && isGreenHue(lab2))
+    || (isGreenHue(lab1) && (isWarmOrNeutral(lab2) || isNonGreenNeutral(lab2)))
   );
 }
 
@@ -239,10 +266,18 @@ export function findClosestPaletteColor(
       return { key: 'ERR', hex: '#000000', rgb: { r: 0, g: 0, b: 0 } };
   }
 
-  let minDistance = Infinity;
-  let closestColor = palette[0];
+  const neutralCandidates = isNeutralSourceColor(targetRgb)
+    ? palette.filter(paletteColor => {
+        const paletteLab = getOklabColor(paletteColor.rgb);
+        return isNeutralPaletteColor(paletteColor.rgb) && !isGreenHue(paletteLab);
+      })
+    : [];
+  const candidatePalette = neutralCandidates.length > 0 ? neutralCandidates : palette;
 
-  for (const paletteColor of palette) {
+  let minDistance = Infinity;
+  let closestColor = candidatePalette[0];
+
+  for (const paletteColor of candidatePalette) {
     const distance = paletteMatchDistance(targetRgb, paletteColor.rgb, toneBias);
     if (distance < minDistance) {
       minDistance = distance;

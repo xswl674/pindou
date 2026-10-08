@@ -3,6 +3,33 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
+const developmentServiceWorkerCleanup = process.env.NODE_ENV === "development"
+  ? `
+      (() => {
+        const cleanupKey = "perler-dev-service-worker-cleaned-v1";
+        if (sessionStorage.getItem(cleanupKey)) return;
+
+        const cleanup = async () => {
+          if (!("serviceWorker" in navigator)) return;
+
+          const registrations = await navigator.serviceWorker.getRegistrations();
+          const cacheNames = "caches" in window ? await caches.keys() : [];
+          const hadStaleState = registrations.length > 0 || cacheNames.length > 0;
+
+          await Promise.all(registrations.map(registration => registration.unregister()));
+          if ("caches" in window) {
+            await Promise.all(cacheNames.map(cacheName => caches.delete(cacheName)));
+          }
+
+          sessionStorage.setItem(cleanupKey, "1");
+          if (hadStaleState) window.location.reload();
+        };
+
+        cleanup().catch(() => sessionStorage.setItem(cleanupKey, "1"));
+      })();
+    `
+  : null;
+
 const geistSans = Geist({
   variable: "--font-geist-sans",
   subsets: ["latin"],
@@ -51,6 +78,9 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased overflow-x-hidden bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-100`}
       >
+        {developmentServiceWorkerCleanup && (
+          <script dangerouslySetInnerHTML={{ __html: developmentServiceWorkerCleanup }} />
+        )}
         {children}
         <Analytics />
       </body>

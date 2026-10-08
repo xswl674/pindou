@@ -13,7 +13,8 @@ import {
   MappedPixel,
   hexToRgb,
   colorDistance,
-  findClosestPaletteColor
+  findClosestPaletteColor,
+  hasWarmGreenHueConflict
 } from '../utils/pixelation';
 
 // 导入新的类型和组件
@@ -96,6 +97,31 @@ import { TRANSPARENT_KEY, transparentColorData } from '../utils/pixelEditingUtil
 // 1. 导入新的 DonationModal 组件
 import DonationModal from '../components/DonationModal';
 import FocusModePreDownloadModal from '../components/FocusModePreDownloadModal';
+
+function isLocalDevelopmentHost(hostname: string): boolean {
+  if (process.env.NODE_ENV !== 'production') return true;
+
+  if (
+    hostname === 'localhost'
+    || hostname === '127.0.0.1'
+    || hostname === '::1'
+    || hostname === '[::1]'
+    || hostname === '0.0.0.0'
+    || hostname.endsWith('.local')
+  ) {
+    return true;
+  }
+
+  const ipv4Parts = hostname.split('.').map(Number);
+  if (ipv4Parts.length !== 4 || ipv4Parts.some(part => !Number.isInteger(part))) {
+    return false;
+  }
+
+  const [first, second] = ipv4Parts;
+  return first === 10
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168);
+}
 
 export default function Home() {
   const [originalImageSrc, setOriginalImageSrc] = useState<string | null>(null);
@@ -981,7 +1007,10 @@ export default function Home() {
               const dist = colorDistance(currentRgb, lowerFreqRgb);
               
               // 如果距离小于阈值，将低频颜色替换为高频颜色
-              if (dist < similarityThresholdValue) {
+              if (
+                dist < similarityThresholdValue
+                && !hasWarmGreenHueConflict(currentRgb, lowerFreqRgb)
+              ) {
                   console.log(`Merging color ${lowerFreqKey} into ${currentKey} (Distance: ${dist.toFixed(2)})`);
                   
                   // 标记这个颜色已被替换
@@ -1105,9 +1134,12 @@ export default function Home() {
     setIsMounted(true);
   }, []);
 
-  // 强制显示专业工作台弹窗（每次进入页面都弹，引导用户前往新版）
+  // 本地调试时留在当前页面，避免跳到未包含本地改动的线上工作台。
   useEffect(() => {
-    setShowDesktopModal(true);
+    const hostname = window.location.hostname;
+    const isLocalhost = isLocalDevelopmentHost(hostname);
+
+    setShowDesktopModal(!isLocalhost);
   }, []);
 
   // 添加URL重定向检查
@@ -1119,11 +1151,7 @@ export default function Home() {
       const targetDomain = 'https://perlerbeadsold.zippland.com/';
       
       // 排除localhost和127.0.0.1等本地开发环境
-      const isLocalhost = currentHostname === 'localhost' || 
-                         currentHostname === '127.0.0.1' || 
-                         currentHostname.startsWith('192.168.') ||
-                         currentHostname.startsWith('10.') ||
-                         currentHostname.endsWith('.local');
+      const isLocalhost = isLocalDevelopmentHost(currentHostname);
       
       // 检查当前URL是否不是目标域名，且不是本地开发环境
       if (!currentUrl.startsWith(targetDomain) && !isLocalhost) {

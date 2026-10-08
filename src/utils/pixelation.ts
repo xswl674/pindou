@@ -22,6 +22,8 @@ interface OklabColor {
   b: number;
 }
 
+export type PaletteToneBias = 'none' | 'warm';
+
 export interface PaletteColor {
   key: string;
   hex: string;
@@ -99,10 +101,137 @@ export function colorDistance(rgb1: RgbColor, rgb2: RgbColor): number {
   return Math.sqrt(dl * dl + da * da + db * db) * 100;
 }
 
+const WARM_GREEN_MATCH_PENALTY = 5;
+const WARM_OR_NEUTRAL_A_MIN = -0.004;
+const NON_BLUE_B_MIN = -0.01;
+const MIN_VISIBLE_CHROMA = 0.008;
+const GREEN_HUE_MIN = 115;
+const GREEN_HUE_MAX = 200;
+const COOL_HUE_MAX = 260;
+
+const TONE_ANALYSIS_MIN_CHROMA = 0.015;
+const TONE_ANALYSIS_MAX_LIGHTNESS = 0.985;
+const TONE_ANALYSIS_MIN_WEIGHT = 0.25;
+const WARM_TONE_MIN_SHARE = 0.75;
+const WARM_TONE_MAX_COOL_SHARE = 0.05;
+const WARM_TONE_COOL_MATCH_PENALTY = 4;
+const WARM_TONE_HUE_SHIFT_WEIGHT = 1;
+
+function getChroma(lab: OklabColor): number {
+  return Math.hypot(lab.a, lab.b);
+}
+
+function getHue(lab: OklabColor): number {
+  const hue = Math.atan2(lab.b, lab.a) * 180 / Math.PI;
+  return hue < 0 ? hue + 360 : hue;
+}
+
+function isHueInRange(lab: OklabColor, minHue: number, maxHue: number): boolean {
+  if (getChroma(lab) < MIN_VISIBLE_CHROMA) return false;
+  const hue = getHue(lab);
+  return lab.a < 0 && hue >= minHue && hue <= maxHue;
+}
+
+function isGreenHue(lab: OklabColor): boolean {
+  return isHueInRange(lab, GREEN_HUE_MIN, GREEN_HUE_MAX);
+}
+
+function isCoolHue(lab: OklabColor): boolean {
+  return isHueInRange(lab, GREEN_HUE_MIN, COOL_HUE_MAX);
+}
+
+function isWarmOrNeutral(lab: OklabColor): boolean {
+  return lab.a >= WARM_OR_NEUTRAL_A_MIN && lab.b >= NON_BLUE_B_MIN;
+}
+
+/**
+ * Near-neutral warm and green shades can have a small total Oklab distance
+ * even when their tint is visibly opposite. Keep that hue direction intact
+ * without affecting blue/purple shades or genuinely green source colors.
+ */
+export function hasWarmGreenHueConflict(rgb1: RgbColor, rgb2: RgbColor): boolean {
+  const lab1 = getOklabColor(rgb1);
+  const lab2 = getOklabColor(rgb2);
+
+  return (
+    (isWarmOrNeutral(lab1) && isGreenHue(lab2))
+    || (isGreenHue(lab1) && isWarmOrNeutral(lab2))
+  );
+}
+
+/**
+ * Detect a strongly warm image with almost no meaningful green/cool content.
+ * Near-white and near-neutral cells do not vote because their hue is unstable.
+ */
+export function inferPaletteToneBias(colors: Array<RgbColor | null>): PaletteToneBias {
+  let totalChromaWeight = 0;
+  let warmChromaWeight = 0;
+  let coolChromaWeight = 0;
+
+  colors.forEach(color => {
+    if (!color) return;
+
+    const lab = getOklabColor(color);
+    const chroma = getChroma(lab);
+    if (chroma < TONE_ANALYSIS_MIN_CHROMA || lab.l > TONE_ANALYSIS_MAX_LIGHTNESS) {
+      return;
+    }
+
+    totalChromaWeight += chroma;
+    if (lab.a >= 0 && lab.b >= -0.02) {
+      warmChromaWeight += chroma;
+    }
+    if (isCoolHue(lab)) {
+      coolChromaWeight += chroma;
+    }
+  });
+
+  if (totalChromaWeight < TONE_ANALYSIS_MIN_WEIGHT) return 'none';
+
+  const warmShare = warmChromaWeight / totalChromaWeight;
+  const coolShare = coolChromaWeight / totalChromaWeight;
+  return warmShare >= WARM_TONE_MIN_SHARE && coolShare <= WARM_TONE_MAX_COOL_SHARE
+    ? 'warm'
+    : 'none';
+}
+
+function getWarmTonePenalty(targetLab: OklabColor, paletteLab: OklabColor): number {
+  // Keep genuinely blue source details cool even inside an otherwise warm image.
+  if (targetLab.b < NON_BLUE_B_MIN) return 0;
+
+  const coolHuePenalty = isCoolHue(paletteLab) ? WARM_TONE_COOL_MATCH_PENALTY : 0;
+  const introducedGreen = Math.max(0, targetLab.a - paletteLab.a);
+  const introducedBlue = Math.max(0, targetLab.b - paletteLab.b);
+  return coolHuePenalty + (
+    introducedGreen + introducedBlue
+  ) * 100 * WARM_TONE_HUE_SHIFT_WEIGHT;
+}
+
+function paletteMatchDistance(
+  targetRgb: RgbColor,
+  paletteRgb: RgbColor,
+  toneBias: PaletteToneBias
+): number {
+  const perceptualDistance = colorDistance(targetRgb, paletteRgb);
+  let adjustedDistance = perceptualDistance + (
+    hasWarmGreenHueConflict(targetRgb, paletteRgb) ? WARM_GREEN_MATCH_PENALTY : 0
+  );
+
+  if (toneBias === 'warm') {
+    adjustedDistance += getWarmTonePenalty(
+      getOklabColor(targetRgb),
+      getOklabColor(paletteRgb)
+    );
+  }
+
+  return adjustedDistance;
+}
+
 // 查找最接近的颜色
 export function findClosestPaletteColor(
   targetRgb: RgbColor,
-  palette: PaletteColor[]
+  palette: PaletteColor[],
+  toneBias: PaletteToneBias = 'none'
 ): PaletteColor {
   if (!palette || palette.length === 0) {
       console.error("findClosestPaletteColor: Palette is empty or invalid!");
@@ -114,7 +243,7 @@ export function findClosestPaletteColor(
   let closestColor = palette[0];
 
   for (const paletteColor of palette) {
-    const distance = colorDistance(targetRgb, paletteColor.rgb);
+    const distance = paletteMatchDistance(targetRgb, paletteColor.rgb, toneBias);
     if (distance < minDistance) {
       minDistance = distance;
       closestColor = paletteColor;
@@ -234,6 +363,10 @@ export function calculatePixelGrid(
         return mappedData;
     }
 
+    const representativeColors: Array<Array<RgbColor | null>> = Array(M)
+      .fill(null)
+      .map(() => Array(N).fill(null));
+
     for (let j = 0; j < M; j++) {
         for (let i = 0; i < N; i++) {
             const startXOriginal = Math.floor(i * cellWidthOriginal);
@@ -255,9 +388,19 @@ export function calculatePixelGrid(
                 mode
             );
 
+            representativeColors[j][i] = representativeRgb;
+        }
+    }
+
+    const toneBias = inferPaletteToneBias(representativeColors.flat());
+    console.log(`Detected palette tone bias: ${toneBias}`);
+
+    for (let j = 0; j < M; j++) {
+        for (let i = 0; i < N; i++) {
+            const representativeRgb = representativeColors[j][i];
             let finalCellColorData: MappedPixel;
             if (representativeRgb) {
-                const closestBead = findClosestPaletteColor(representativeRgb, palette);
+                const closestBead = findClosestPaletteColor(representativeRgb, palette, toneBias);
                 finalCellColorData = { key: closestBead.key, color: closestBead.hex };
             } else {
                 // 如果单元格为空或全透明，标记为透明/外部

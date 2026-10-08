@@ -972,7 +972,9 @@ export default function Home() {
       );
       
       // 5. 处理相似颜色合并
-      const similarityThresholdValue = threshold;
+      // The UI exposes a broader similarity scale than the merge distance;
+      // convert it before comparing Oklab distances.
+      const similarityThresholdValue = threshold / 10;
       
       // 已被合并（替换）的颜色集合
       const replacedColors = new Set<string>();

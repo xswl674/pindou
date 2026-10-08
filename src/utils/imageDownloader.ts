@@ -2,78 +2,6 @@ import { GridDownloadOptions } from '../types/downloadTypes';
 import { MappedPixel, PaletteColor } from './pixelation';
 import { getDisplayColorKey, getColorKeyByHex, ColorSystem } from './colorSystemUtils';
 
-const DOWNLOAD_CELL_SIZES = {
-  standard: 30,
-  high: 48,
-  ultra: 60,
-} as const;
-const DOWNLOAD_LIMITS = {
-  standard: { maxGridPixels: 12_000_000, maxDimension: 5_000 },
-  high: { maxGridPixels: 18_000_000, maxDimension: 6_000 },
-  ultra: { maxGridPixels: 25_000_000, maxDimension: 6_500 },
-} as const;
-
-let cachedQrCodeImage: HTMLImageElement | null = null;
-
-if (typeof window !== 'undefined') {
-  cachedQrCodeImage = new Image();
-  cachedQrCodeImage.src = '/website_qrcode.png';
-}
-
-function triggerBlobDownload(blob: Blob, filename: string): void {
-  const link = document.createElement('a');
-  const url = URL.createObjectURL(blob);
-
-  link.href = url;
-  link.download = filename;
-  link.style.display = 'none';
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-
-  // Safari may still be reading the object URL immediately after click().
-  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
-}
-
-function drawRoundedRectPath(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  radius: number
-): void {
-  const safeRadius = Math.max(0, Math.min(radius, width / 2, height / 2));
-
-  if (typeof ctx.roundRect === 'function') {
-    ctx.roundRect(x, y, width, height, safeRadius);
-    return;
-  }
-
-  ctx.moveTo(x + safeRadius, y);
-  ctx.lineTo(x + width - safeRadius, y);
-  ctx.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
-  ctx.lineTo(x + width, y + height - safeRadius);
-  ctx.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
-  ctx.lineTo(x + safeRadius, y + height);
-  ctx.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
-  ctx.lineTo(x, y + safeRadius);
-  ctx.quadraticCurveTo(x, y, x + safeRadius, y);
-  ctx.closePath();
-}
-
-function canvasToPngBlob(canvas: HTMLCanvasElement): Promise<Blob> {
-  return new Promise((resolve, reject) => {
-    canvas.toBlob((blob) => {
-      if (blob) {
-        resolve(blob);
-      } else {
-        reject(new Error('浏览器无法生成 PNG，画布可能过大。'));
-      }
-    }, 'image/png');
-  });
-}
-
 // 用于获取对比色的工具函数 - 从page.tsx复制
 function getContrastColor(hex: string): string {
   const rgb = hexToRgb(hex);
@@ -159,7 +87,19 @@ export function exportCsvData({
   
   // 创建并下载CSV文件
   const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  triggerBlobDownload(blob, `bead-pattern-${N}x${M}-${selectedColorSystem}.csv`);
+  const link = document.createElement('a');
+  const url = URL.createObjectURL(blob);
+  
+  link.setAttribute('href', url);
+  link.setAttribute('download', `bead-pattern-${N}x${M}-${selectedColorSystem}.csv`);
+  link.style.visibility = 'hidden';
+  
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  
+  // 释放URL对象
+  URL.revokeObjectURL(url);
   
   console.log("CSV数据导出完成");
 }
@@ -289,22 +229,14 @@ export async function downloadImage({
     return;
   }
   
-  const qrCodeImage = cachedQrCodeImage;
+  // 加载二维码图片
+  const qrCodeImage = new Image();
+  qrCodeImage.src = '/website_qrcode.png'; // 使用public目录中的图片
   
   // 主要下载处理函数
-  const processDownload = async () => {
-    try {
-      const { N, M } = gridDimensions; // 此时已确保gridDimensions不为null
-      const resolution = options.resolution ?? 'ultra';
-      const limits = DOWNLOAD_LIMITS[resolution];
-      const cellSizeByArea = Math.floor(Math.sqrt(limits.maxGridPixels / (N * M)));
-      const cellSizeByDimension = Math.floor(limits.maxDimension / Math.max(N, M));
-      const requestedCellSize = DOWNLOAD_CELL_SIZES[resolution];
-      const downloadCellSize = Math.min(requestedCellSize, cellSizeByArea, cellSizeByDimension);
-
-      if (downloadCellSize < 8) {
-        throw new Error('图纸尺寸过大，请调低格子数后重试。');
-      }
+  const processDownload = () => {
+    const { N, M } = gridDimensions; // 此时已确保gridDimensions不为null
+    const downloadCellSize = 30;
   
     // 从下载选项中获取设置
     const { showGrid, gridInterval, showCoordinates, gridLineColor, includeStats, showCellNumbers = true } = options;
@@ -322,7 +254,7 @@ export async function downloadImage({
     
     // 计算字体大小 - 与颜色统计区域保持一致
     const baseStatsFontSize = 13;
-    const widthFactor = Math.min(2, Math.max(0, preCalcAvailableWidth - 350) / 600);
+    const widthFactor = Math.max(0, preCalcAvailableWidth - 350) / 600;
     const statsFontSize = Math.floor(baseStatsFontSize + (widthFactor * 10));
     
     // 计算额外边距，确保坐标数字完全显示（四边都需要）
@@ -381,8 +313,8 @@ export async function downloadImage({
       const statsRowHeight = Math.max(swatchSize + 8, 25);
       
       // 标题和页脚高度
-      const titleHeight = 30; // 标题和分隔线的总高度
-      const footerHeight = 30; // 总计与水印区域的高度
+      const titleHeight = 40; // 标题和分隔线的总高度
+      const footerHeight = 40; // 总计部分的高度
       
       // 计算统计区域的总高度 - 需要包含顶部间距
       statsHeight = titleHeight + (numRows * statsRowHeight) + footerHeight + (statsPadding * 2) + statsTopMargin;
@@ -390,9 +322,9 @@ export async function downloadImage({
   
     // 调整画布大小，包含标题栏、坐标轴、统计区域和小红书标识区域（四边都有坐标）
     const downloadWidth = gridWidth + (axisLabelSize * 2) + extraLeftMargin + extraRightMargin;
-    const downloadHeight = titleBarHeight + gridHeight + (axisLabelSize * 2) + statsHeight + extraTopMargin + extraBottomMargin + xiaohongshuAreaHeight;
+    let downloadHeight = titleBarHeight + gridHeight + (axisLabelSize * 2) + statsHeight + extraTopMargin + extraBottomMargin + xiaohongshuAreaHeight;
   
-    const downloadCanvas = document.createElement('canvas');
+    let downloadCanvas = document.createElement('canvas');
     downloadCanvas.width = downloadWidth;
     downloadCanvas.height = downloadHeight;
     const context = downloadCanvas.getContext('2d');
@@ -403,7 +335,7 @@ export async function downloadImage({
     }
     
     // 使用非空的context变量
-    const ctx = context;
+    let ctx = context;
     ctx.imageSmoothingEnabled = false;
   
     // 设置背景色
@@ -441,7 +373,7 @@ export async function downloadImage({
         
         // 绘制圆角方块，模拟拼豆
         ctx.beginPath();
-        drawRoundedRectPath(ctx, beadX, beadY, beadSize, beadSize, beadSize * 0.2);
+        ctx.roundRect(beadX, beadY, beadSize, beadSize, beadSize * 0.2);
         ctx.fill();
         
         // 添加中心小圆点，增加拼豆特征
@@ -493,15 +425,15 @@ export async function downloadImage({
     // 二维码背景 - 圆角，更现代
     ctx.fillStyle = '#FFFFFF';
     ctx.beginPath();
-    drawRoundedRectPath(ctx, qrX, qrY, qrSize, qrSize, qrSize * 0.08);
+    ctx.roundRect(qrX, qrY, qrSize, qrSize, qrSize * 0.08);
     ctx.fill();
     
     // 绘制二维码图片或占位符
-    if (qrCodeImage?.complete && qrCodeImage.naturalWidth !== 0) {
+    if (qrCodeImage.complete && qrCodeImage.naturalWidth !== 0) {
       // 使用裁剪区域绘制圆角二维码
       ctx.save();
       ctx.beginPath();
-      drawRoundedRectPath(ctx, qrX, qrY, qrSize, qrSize, qrSize * 0.08);
+      ctx.roundRect(qrX, qrY, qrSize, qrSize, qrSize * 0.08);
       ctx.clip();
       ctx.drawImage(qrCodeImage, qrX, qrY, qrSize, qrSize);
       ctx.restore();
@@ -703,8 +635,7 @@ export async function downloadImage({
     const secondaryBgPadding = 4;
     ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
     ctx.beginPath();
-    drawRoundedRectPath(
-      ctx,
+    ctx.roundRect(
       secondaryWatermarkX - secondaryBgPadding,
       secondaryWatermarkY - secondaryHeight - secondaryBgPadding,
       secondaryWidth + secondaryBgPadding * 2,
@@ -830,8 +761,7 @@ export async function downloadImage({
       const statsBgPadding = 5;
       ctx.fillStyle = 'rgba(248, 250, 252, 0.9)'; // 浅灰背景，更柔和
       ctx.beginPath();
-      drawRoundedRectPath(
-        ctx,
+      ctx.roundRect(
         statsWatermarkX - statsBgPadding,
         statsWatermarkY - statsTextHeight - statsBgPadding,
         statsTextWidth + statsBgPadding * 2,
@@ -851,21 +781,48 @@ export async function downloadImage({
       ctx.textBaseline = 'bottom';
       ctx.fillText(statsWatermarkText, statsWatermarkX, statsWatermarkY);
       
+      // 更新统计区域高度的计算 - 需要包含新增的顶部间距
+      const footerHeight = 30; // 总计部分高度
+      statsHeight = titleHeight + (numRows * statsRowHeight) + footerHeight + (statsPadding * 2) + statsTopMargin;
     }
 
-      // Some browsers accept an oversized canvas but silently encode it as a
-      // fully transparent PNG. The title background must always make this
-      // corner opaque, so validate it before offering the file for download.
-      const markerPixel = ctx.getImageData(0, 0, 1, 1).data;
-      if (markerPixel[3] === 0) {
-        throw new Error('图纸超出浏览器可用画布内存，请选择高清或调低格子数。');
+    // 重新计算画布高度并调整
+    if (includeStats && colorCounts) {
+      // 调整画布大小，包含计算后的统计区域和小红书标识区域
+      const newDownloadHeight = titleBarHeight + extraTopMargin + M * downloadCellSize + (axisLabelSize * 2) + statsHeight + extraBottomMargin + xiaohongshuAreaHeight;
+      
+      if (downloadHeight !== newDownloadHeight) {
+        // 如果高度变化了，需要创建新的画布并复制当前内容
+        const newCanvas = document.createElement('canvas');
+        newCanvas.width = downloadWidth;
+        newCanvas.height = newDownloadHeight;
+        const newContext = newCanvas.getContext('2d');
+        
+        if (newContext) {
+          // 复制原画布内容
+          newContext.drawImage(downloadCanvas, 0, 0);
+          
+          // 更新画布和上下文引用
+          downloadCanvas = newCanvas;
+          ctx = newContext;
+          ctx.imageSmoothingEnabled = false;
+          
+          // 更新高度
+          downloadHeight = newDownloadHeight;
+        }
       }
+    }
 
-      const blob = await canvasToPngBlob(downloadCanvas);
-      const filename = showCellNumbers
-        ? `bead-grid-${N}x${M}-keys-${resolution}-palette_${selectedColorSystem}.png`
-        : `bead-grid-${N}x${M}-pixel-${resolution}-palette_${selectedColorSystem}.png`;
-      triggerBlobDownload(blob, filename);
+    try {
+      const dataURL = downloadCanvas.toDataURL('image/png');
+      const link = document.createElement('a');
+      link.download = showCellNumbers
+        ? `bead-grid-${N}x${M}-keys-palette_${selectedColorSystem}.png`
+        : `bead-grid-${N}x${M}-pixel-palette_${selectedColorSystem}.png`;
+      link.href = dataURL;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
       console.log("Grid image download initiated.");
       
       // 如果启用了CSV导出，同时导出CSV文件
@@ -878,11 +835,18 @@ export async function downloadImage({
       }
     } catch (e) {
       console.error("下载图纸失败:", e);
-      alert(e instanceof Error ? `无法生成图纸：${e.message}` : "无法生成图纸下载链接。");
-      throw e;
+      alert("无法生成图纸下载链接。");
     }
   };
   
-  // 二维码尚未加载完成时使用占位符，不能让装饰资源阻塞下载。
-  await processDownload();
+  // 图片加载后处理，或在加载失败时使用占位符
+  if (qrCodeImage.complete) {
+    processDownload();
+  } else {
+    qrCodeImage.onload = processDownload;
+    qrCodeImage.onerror = () => {
+      console.warn("二维码图片加载失败，将使用占位符");
+      processDownload();
+    };
+  }
 } 

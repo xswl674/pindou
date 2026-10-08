@@ -11,18 +11,12 @@ const gridLineColorOptions = [
   { name: '橙色', value: '#FFA500' },
 ];
 
-const resolutionOptions = [
-  { name: '标准', value: 'standard' as const, detail: '30px/格' },
-  { name: '高清', value: 'high' as const, detail: '48px/格' },
-  { name: '超清', value: 'ultra' as const, detail: '60px/格' },
-];
-
 interface DownloadSettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   options: GridDownloadOptions;
   onOptionsChange: (options: GridDownloadOptions) => void;
-  onDownload: (opts?: GridDownloadOptions) => Promise<void>;
+  onDownload: (opts?: GridDownloadOptions) => void;
 }
 
 const DownloadSettingsModal: React.FC<DownloadSettingsModalProps> = ({
@@ -34,7 +28,6 @@ const DownloadSettingsModal: React.FC<DownloadSettingsModalProps> = ({
 }) => {
   // 将useState移到顶层，不管isOpen是什么值
   const [tempOptions, setTempOptions] = useState<GridDownloadOptions>({...options});
-  const [isDownloading, setIsDownloading] = useState(false);
   
   // 如果不是打开状态，仍然可以返回null
   if (!isOpen) return null;
@@ -48,27 +41,19 @@ const DownloadSettingsModal: React.FC<DownloadSettingsModalProps> = ({
   };
   
   // 保存选项并立即使用新设置下载
-  const handleSave = async () => {
-    if (isDownloading) return;
-
+  const handleSave = () => {
     // 更新父组件中的设置状态（虽然下载时不依赖这个更新）
     onOptionsChange(tempOptions);
-
-    setIsDownloading(true);
-    try {
-      // 直接使用当前临时设置下载，不依赖状态更新
-      await onDownload(tempOptions);
-      onClose();
-    } catch {
-      // 下载函数已显示具体错误，保留弹窗方便用户调整设置后重试。
-    } finally {
-      setIsDownloading(false);
-    }
+    
+    // 直接使用当前临时设置下载，不依赖状态更新
+    onDownload(tempOptions); 
+    
+    onClose();
   };
   
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg overflow-y-auto w-full max-w-md max-h-[calc(100dvh-2rem)]">
+      <div className="bg-white dark:bg-gray-800 rounded-xl shadow-lg overflow-hidden w-full max-w-md">
         <div className="p-5">
           <div className="flex justify-between items-center border-b dark:border-gray-700 pb-3 mb-4">
             <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">下载图纸设置</h3>
@@ -83,35 +68,6 @@ const DownloadSettingsModal: React.FC<DownloadSettingsModalProps> = ({
           </div>
           
           <div className="space-y-4">
-            <div className="space-y-2">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                导出清晰度
-              </label>
-              <div className="grid grid-cols-3 rounded-lg bg-gray-100 dark:bg-gray-700 p-1" role="radiogroup" aria-label="导出清晰度">
-                {resolutionOptions.map((resolution) => {
-                  const isSelected = tempOptions.resolution === resolution.value;
-
-                  return (
-                    <button
-                      key={resolution.value}
-                      type="button"
-                      role="radio"
-                      aria-checked={isSelected}
-                      onClick={() => handleOptionChange('resolution', resolution.value)}
-                      className={`min-w-0 px-2 py-2 rounded-md text-center transition-colors ${
-                        isSelected
-                          ? 'bg-white dark:bg-gray-800 text-blue-600 dark:text-blue-300 shadow-sm'
-                          : 'text-gray-600 dark:text-gray-300 hover:text-gray-900 dark:hover:text-white'
-                      }`}
-                    >
-                      <span className="block text-sm font-medium">{resolution.name}</span>
-                      <span className="block text-xs text-gray-500 dark:text-gray-400">{resolution.detail}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
             {/* 显示网格线选项 */}
             <div className="flex items-center justify-between">
               <label className="flex items-center text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -259,10 +215,9 @@ const DownloadSettingsModal: React.FC<DownloadSettingsModalProps> = ({
             </button>
             <button
               onClick={handleSave}
-              disabled={isDownloading}
-              className="min-w-[104px] px-4 py-2 bg-blue-500 hover:bg-blue-600 disabled:bg-blue-400 disabled:cursor-wait text-white rounded-lg transition-colors"
+              className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition-colors"
             >
-              {isDownloading ? '正在生成...' : '下载图纸'}
+              下载图纸
             </button>
           </div>
         </div>

@@ -103,7 +103,6 @@ export default function Home() {
   const [granularityInput, setGranularityInput] = useState<string>("50");
   const [similarityThreshold, setSimilarityThreshold] = useState<number>(30);
   const [similarityThresholdInput, setSimilarityThresholdInput] = useState<string>("30");
-  const [isProcessing, setIsProcessing] = useState<boolean>(false);
   // 添加像素化模式状态
   const [pixelationMode, setPixelationMode] = useState<PixelationMode>(PixelationMode.Dominant); // 默认为卡通模式
   
@@ -137,7 +136,6 @@ export default function Home() {
   // ++ 新增：下载设置相关状态 ++
   const [isDownloadSettingsOpen, setIsDownloadSettingsOpen] = useState<boolean>(false);
   const [downloadOptions, setDownloadOptions] = useState<GridDownloadOptions>({
-    resolution: 'ultra',
     showGrid: true,
     gridInterval: 10,
     showCoordinates: true,
@@ -320,7 +318,6 @@ export default function Home() {
   const originalCanvasRef = useRef<HTMLCanvasElement>(null);
   const pixelatedCanvasRef = useRef<HTMLCanvasElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const processingRequestRef = useRef<number>(0);
   // ++ 添加: Ref for import file input ++
   const importPaletteInputRef = useRef<HTMLInputElement>(null);
   //const longPressTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -791,40 +788,18 @@ export default function Home() {
       setSimilarityThreshold(newSimilarity);
     }
     
-    // 每次点击都重新计算。先清除旧结果，避免大网格处理期间误下载上一份图纸。
-    setMappedPixelData(null);
-    setGridDimensions(null);
-    setColorCounts(null);
-    setTotalBeadCount(0);
-    setIsProcessing(true);
-    setRemapTrigger(prev => prev + 1);
-    setIsManualColoringMode(false);
-    setSelectedColor(null);
+    // 只有在有值变化时才触发重映射
+    if (granularityChanged || similarityChanged) {
+      setRemapTrigger(prev => prev + 1);
+      // 退出手动上色模式
+      setIsManualColoringMode(false);
+      setSelectedColor(null);
+    }
 
     // 始终同步输入框的值
     setGranularityInput(newGranularity.toString());
     setSimilarityThresholdInput(newSimilarity.toString());
   };
-
-  // 输入停顿后自动按当前数值生成，避免输入值与已生成图纸尺寸不一致。
-  useEffect(() => {
-    if (!originalImageSrc || isProcessing) return;
-
-    const requestedGranularity = Math.max(10, Math.min(300, parseInt(granularityInput, 10) || 10));
-    const requestedSimilarity = Math.max(0, Math.min(100, parseInt(similarityThresholdInput, 10) || 0));
-
-    if (requestedGranularity === granularity && requestedSimilarity === similarityThreshold) {
-      return;
-    }
-
-    const timer = window.setTimeout(() => {
-      handleConfirmParameters();
-    }, 600);
-
-    return () => window.clearTimeout(timer);
-    // handleConfirmParameters intentionally uses the values listed below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [granularityInput, similarityThresholdInput, originalImageSrc, isProcessing, granularity, similarityThreshold]);
 
   // 添加像素化模式切换处理函数
   const handlePixelationModeChange = (event: ChangeEvent<HTMLSelectElement>) => {
@@ -842,23 +817,13 @@ export default function Home() {
   // 修改pixelateImage函数接收模式参数
   const pixelateImage = (imageSrc: string, detailLevel: number, threshold: number, currentPalette: PaletteColor[], mode: PixelationMode) => {
     console.log(`Attempting to pixelate with detail: ${detailLevel}, threshold: ${threshold}, mode: ${mode}`);
-    const requestId = ++processingRequestRef.current;
-    setIsProcessing(true);
     const originalCanvas = originalCanvasRef.current;
     const pixelatedCanvas = pixelatedCanvasRef.current;
 
-    if (!originalCanvas || !pixelatedCanvas) {
-      console.error("Canvas ref(s) not available.");
-      setIsProcessing(false);
-      return;
-    }
+    if (!originalCanvas || !pixelatedCanvas) { console.error("Canvas ref(s) not available."); return; }
     const originalCtx = originalCanvas.getContext('2d', { willReadFrequently: true });
     const pixelatedCtx = pixelatedCanvas.getContext('2d');
-    if (!originalCtx || !pixelatedCtx) {
-      console.error("Canvas context(s) not found.");
-      setIsProcessing(false);
-      return;
-    }
+    if (!originalCtx || !pixelatedCtx) { console.error("Canvas context(s) not found."); return; }
     console.log("Canvas contexts obtained.");
 
     if (currentPalette.length === 0) {
@@ -871,7 +836,6 @@ export default function Home() {
         // Keep colorCounts potentially showing the last valid counts? Or clear them too?
         // setColorCounts(null); // Decide if clearing counts is desired when palette is empty
         // setTotalBeadCount(0);
-        setIsProcessing(false);
         return; // Stop processing
     }
     const t1FallbackColor = currentPalette.find(p => p.key === 'T1')
@@ -889,22 +853,14 @@ export default function Home() {
       setGridDimensions(null); 
       setColorCounts(null); 
       setInitialGridColorKeys(new Set());
-      if (requestId === processingRequestRef.current) {
-        setIsProcessing(false);
-      }
     };
     
     img.onload = () => {
       console.log("Image loaded successfully.");
-      try {
       const aspectRatio = img.height / img.width;
       const N = detailLevel;
       const M = Math.max(1, Math.round(N * aspectRatio));
-      if (N <= 0 || M <= 0) {
-        console.error("Invalid grid dimensions:", { N, M });
-        setIsProcessing(false);
-        return;
-      }
+      if (N <= 0 || M <= 0) { console.error("Invalid grid dimensions:", { N, M }); return; }
       console.log(`Grid size: ${N}x${M}`);
 
       // 动态调整画布尺寸：当格子数量大于100时，增加画布尺寸以保持每个格子的可见性
@@ -990,9 +946,7 @@ export default function Home() {
       );
       
       // 5. 处理相似颜色合并
-      // Oklab 距离以 0-100 表示时，直接使用旧 RGB 阈值会过度合并。
-      // 保留现有 0-100 UI 刻度，将其换算为实际的 Oklab 合并距离。
-      const similarityThresholdValue = threshold / 10;
+      const similarityThresholdValue = threshold;
       
       // 已被合并（替换）的颜色集合
       const replacedColors = new Set<string>();
@@ -1061,10 +1015,6 @@ export default function Home() {
 
       // --- 绘制和状态更新 ---
       if (pixelatedCanvasRef.current) {
-        if (requestId !== processingRequestRef.current) {
-          return;
-        }
-
         setMappedPixelData(mergedData);
         setGridDimensions({ N, M });
 
@@ -1087,22 +1037,8 @@ export default function Home() {
         console.log("Color counts updated based on merged data (after merging):", counts);
         console.log("Total bead count (total beads):", totalCount);
         console.log("Stored initial grid color keys:", Object.keys(counts));
-        setIsProcessing(false);
       } else {
         console.error("Pixelated canvas ref is null, skipping draw call in pixelateImage.");
-        if (requestId === processingRequestRef.current) {
-          setIsProcessing(false);
-        }
-      }
-      } catch (error) {
-        console.error("图像网格计算失败:", error);
-        if (requestId === processingRequestRef.current) {
-          setIsProcessing(false);
-          setMappedPixelData(null);
-          setGridDimensions(null);
-          setColorCounts(null);
-          alert("图像网格计算失败，请调低横轴切割数量后重试。");
-        }
       }
     }; // 正确闭合 img.onload 函数
     
@@ -1169,16 +1105,9 @@ export default function Home() {
     setIsMounted(true);
   }, []);
 
-  // 本地调试时留在当前页面，避免跳到未包含本地改动的线上工作台。
+  // 强制显示专业工作台弹窗（每次进入页面都弹，引导用户前往新版）
   useEffect(() => {
-    const hostname = window.location.hostname;
-    const isLocalhost = hostname === 'localhost' ||
-                        hostname === '127.0.0.1' ||
-                        hostname.startsWith('192.168.') ||
-                        hostname.startsWith('10.') ||
-                        hostname.endsWith('.local');
-
-    setShowDesktopModal(!isLocalhost);
+    setShowDesktopModal(true);
   }, []);
 
   // 添加URL重定向检查
@@ -1227,9 +1156,9 @@ export default function Home() {
   }, []); // 只在组件首次挂载时执行
 
     // --- Download function (ensure filename includes palette) ---
-    const handleDownloadRequest = (options?: GridDownloadOptions): Promise<void> => {
+    const handleDownloadRequest = (options?: GridDownloadOptions) => {
         // 调用移动到utils/imageDownloader.ts中的downloadImage函数
-        return downloadImage({
+        downloadImage({
           mappedPixelData,
           gridDimensions,
           colorCounts,
@@ -2357,11 +2286,6 @@ export default function Home() {
                       id="granularityInput"
                       value={granularityInput}
                       onChange={handleGranularityInputChange}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          handleConfirmParameters();
-                        }
-                      }}
                       className="w-full p-1.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 h-9 shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500"
                       min="10"
                       max="300"
@@ -2382,11 +2306,6 @@ export default function Home() {
                         id="similarityThresholdInput"
                         value={similarityThresholdInput}
                         onChange={handleSimilarityThresholdInputChange}
-                        onKeyDown={(event) => {
-                          if (event.key === 'Enter') {
-                            handleConfirmParameters();
-                          }
-                        }}
                         className="w-full p-1.5 border border-gray-300 dark:border-gray-600 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 h-9 shadow-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200 placeholder-gray-400 dark:placeholder-gray-500"
                         min="0"
                         max="100"
@@ -2398,12 +2317,9 @@ export default function Home() {
                 <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
                   <button
                     onClick={handleConfirmParameters}
-                    disabled={isProcessing}
-                    className="h-9 min-w-[88px] bg-blue-500 hover:bg-blue-600 disabled:bg-blue-400 disabled:cursor-wait text-white text-sm px-3 rounded-md whitespace-nowrap transition-colors duration-200 shadow-sm"
+                    className="h-9 bg-blue-500 hover:bg-blue-600 text-white text-sm px-3 rounded-md whitespace-nowrap transition-colors duration-200 shadow-sm"
                   >
-                    {isProcessing
-                      ? '正在生成...'
-                      : `生成 ${Math.max(10, Math.min(300, parseInt(granularityInput, 10) || 10))} 格图纸`}
+                    应用数字
                   </button>
                   <button
                     onClick={handleAutoRemoveBackground}
@@ -2508,23 +2424,6 @@ export default function Home() {
             {/* Output Section */}
             <div className="w-full md:max-w-2xl">
               <canvas ref={originalCanvasRef} className="hidden"></canvas>
-
-              <div className={`mb-3 px-3 py-2 rounded-lg border text-sm text-center ${
-                isProcessing
-                  ? 'bg-blue-50 border-blue-200 text-blue-700 dark:bg-blue-900/30 dark:border-blue-800 dark:text-blue-300'
-                  : 'bg-gray-50 border-gray-200 text-gray-600 dark:bg-gray-800 dark:border-gray-700 dark:text-gray-300'
-              }`} role="status" aria-live="polite">
-                {isProcessing
-                  ? `正在生成 ${granularity} 格横轴图纸...`
-                  : gridDimensions
-                    ? (() => {
-                        const pendingGranularity = Math.max(10, Math.min(300, parseInt(granularityInput, 10) || 10));
-                        return pendingGranularity === gridDimensions.N
-                          ? `当前图纸：${gridDimensions.N} × ${gridDimensions.M}`
-                          : `当前图纸：${gridDimensions.N} × ${gridDimensions.M}；${pendingGranularity} 格尚未生成`;
-                      })()
-                    : '等待生成图纸'}
-              </div>
 
               {/* ++ 手动编辑模式提示信息 ++ */}
               {isManualColoringMode && mappedPixelData && gridDimensions && (
